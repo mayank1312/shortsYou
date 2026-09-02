@@ -1,22 +1,15 @@
 fastapi
 uvicorn[standard]
 
-openai-whisper
-whisperx
-
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+transformers
 sentence-transformers
 scikit-learn
-gensim
-pytrends
-
-torch
-torchaudio
-transformers
-datasets
-evaluate
 
 groq
 httpx
+deepgram-sdk==7.7.0
 
 python-dotenv
 pymongo
