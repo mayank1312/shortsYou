@@ -2,24 +2,13 @@ import json
 import logging
 from typing import Any
 
-from groq import Groq
-
-from app.core.configuration import settings
+from app.shared.api_rotator import groq_rotator
 
 
 logger = logging.getLogger(__name__)
 
 
 class FillerDetector:
-
-    def __init__(self) -> None:
-
-        self.client = None
-
-        if settings.GROQ_API_KEY_1:
-            self.client = Groq(
-                api_key=settings.GROQ_API_KEY_1
-            )
 
     async def detect_fillers(
         self,
@@ -34,7 +23,7 @@ class FillerDetector:
 
             return []
 
-        if self.client is None:
+        if not groq_rotator.available:
             logger.warning(
                 "Groq API key unavailable; "
                 "skipping AI filler detection."
@@ -145,7 +134,7 @@ Return only the JSON object.
                 "qwen/qwen3.6-27b",
             )
 
-            response = self.client.chat.completions.create(
+            response = groq_rotator.create_chat_completion(
                 model="qwen/qwen3.6-27b",
                 messages=[
                     {

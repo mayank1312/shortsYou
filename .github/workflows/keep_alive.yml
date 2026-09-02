@@ -1,0 +1,40 @@
+name: Keep Render service awake
+
+# Render's free tier spins down the service after ~15 minutes of
+# no incoming traffic. Pinging a lightweight endpoint (/health)
+# more often than that keeps it warm and avoids the 30-60s
+# cold-start penalty on real requests.
+#
+# NOTE: GitHub Actions cron schedules are "best effort" - during
+# periods of high GitHub load, a run can be delayed by a few
+# minutes. Using a 10-minute interval (instead of exactly 14)
+# gives some buffer so a delayed run still lands inside the
+# 15-minute window most of the time.
+#
+# NOTE: GitHub automatically disables scheduled workflows on a
+# repo after 60 days with no commits/activity. If pings suddenly
+# stop working, check Actions tab -> this workflow -> re-enable.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+    # Allows manually triggering a ping from the Actions tab,
+    # useful for testing this without waiting for the schedule.
+
+jobs:
+  ping-health:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ping /health endpoint
+        run: |
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ vars.RENDER_APP_URL }}/health" \
+            --max-time 30)
+
+          echo "Health check responded with HTTP $RESPONSE"
+
+          if [ "$RESPONSE" -ne 200 ]; then
+            echo "::warning::Health check did not return 200 (got $RESPONSE)"
+          fi

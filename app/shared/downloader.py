@@ -59,6 +59,89 @@ async def get_media_duration(
         return None
 
 
+async def slice_audio(
+    audio_path: str,
+    start: float,
+    end: float,
+) -> str:
+    """
+    Cut out [start, end] from an existing audio file using ffmpeg
+    and return the path to the new slice.
+
+    Used to re-send a specific window of audio to Deepgram in
+    isolation, when the first pass over the full file returned no
+    words for that window (a suspected VAD / language-detection
+    miss rather than genuine silence).
+    """
+
+    os.makedirs(
+        DOWNLOAD_DIRECTORY,
+        exist_ok=True,
+    )
+
+    slice_path = os.path.join(
+        DOWNLOAD_DIRECTORY,
+        f"{uuid.uuid4()}_slice.wav",
+    )
+
+    # Small padding on both sides so we don't clip the first/last
+    # syllable right at the boundary.
+    padded_start = max(0.0, start - 0.5)
+    padded_duration = (end - padded_start) + 0.5
+
+    logger.info(
+        "Slicing audio for gap re-check | "
+        "source=%s | start=%.3f | end=%.3f | padded_start=%.3f | "
+        "padded_duration=%.3f",
+        audio_path,
+        start,
+        end,
+        padded_start,
+        padded_duration,
+    )
+
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-y",
+        "-i",
+        audio_path,
+        "-ss",
+        str(padded_start),
+        "-t",
+        str(padded_duration),
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        slice_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    _, stderr = await process.communicate()
+
+    if process.returncode != 0:
+
+        logger.error(
+            "FFmpeg slicing failed | stderr=%s",
+            stderr.decode(errors="ignore"),
+        )
+
+        raise RuntimeError(
+            "Audio slicing failed"
+        )
+
+    logger.info(
+        "Audio slice created | path=%s | size=%d bytes",
+        slice_path,
+        os.path.getsize(slice_path),
+    )
+
+    return slice_path
+
+
 async def download_audio(video_url: str) -> str:
 
     os.makedirs(

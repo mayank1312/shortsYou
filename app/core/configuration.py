@@ -21,6 +21,8 @@ class Settings:
     GROQ_API_KEY_1: str = os.getenv("GROQ_API_KEY_1", "")
     GROQ_API_KEY_2: str = os.getenv("GROQ_API_KEY_2", "")
 
+    API_ACCESS_KEY: str = os.getenv("API_ACCESS_KEY", "")
+
     WHISPER_MODEL: str = os.getenv(
         "WHISPER_MODEL",
         "small",
@@ -28,4 +30,3 @@ class Settings:
 
 
 settings = Settings()
-

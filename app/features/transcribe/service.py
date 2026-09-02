@@ -1,4 +1,4 @@
-
+import asyncio
 import logging
 import os
 import wave
@@ -9,7 +9,9 @@ from app.features.transcribe.model import transcription_model
 from app.features.transcribe.filler_analysis import (
     analyze_transcription_for_fillers,
 )
-from app.shared.downloader import download_audio
+from app.shared.downloader import download_audio, slice_audio
+
+MIN_GAP_TO_RECHECK = 3.0
 
 
 logger = logging.getLogger(__name__)
@@ -193,7 +195,7 @@ async def process_whisper_result(
     processed_segments: list[dict[str, Any]] = []
 
     # ---------------------------------------------------------
-    # PROCESS EACH WHISPER SEGMENT
+    # PROCESS EACH DEEPGRAM SEGMENT
     # ---------------------------------------------------------
 
     for index, whisper_segment in enumerate(raw_segments):
@@ -360,6 +362,134 @@ async def process_whisper_result(
     }
 
 
+async def recover_silence_gaps(
+    media_path: str,
+    processed_result: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    For every detected silence gap wider than MIN_GAP_TO_RECHECK,
+    re-send just that window of audio to Deepgram in isolation
+    (with a fixed language, not "multi") and see if it actually
+    contains speech that the first full-file pass missed.
+
+    This exists because a full-file pass can silently drop a
+    mid-file window (VAD misclassification, language-detection
+    confusion, or long-file chunking quirks) even when that
+    window has clean audible speech. Re-checking just that
+    window, out of context, is often enough to recover it.
+
+    Any recovered words are appended as a new segment, and the
+    original silence gap entry covering that window is removed
+    (or shrunk, if only part of it was recovered).
+    """
+
+    silence_gaps = processed_result.get("silenceGaps", [])
+
+    if not silence_gaps:
+        return processed_result
+
+    segments = processed_result.get("segments", [])
+
+    remaining_gaps: list[dict[str, float]] = []
+    recovered_segments: list[dict[str, Any]] = []
+
+    for gap in silence_gaps:
+
+        gap_start = float(gap["start"])
+        gap_end = float(gap["end"])
+        gap_duration = gap_end - gap_start
+
+        if gap_duration < MIN_GAP_TO_RECHECK:
+            remaining_gaps.append(gap)
+            continue
+
+        logger.info(
+            "Re-checking silence gap against Deepgram | "
+            "start=%.3f | end=%.3f | duration=%.3f",
+            gap_start,
+            gap_end,
+            gap_duration,
+        )
+
+        try:
+
+            slice_path = await slice_audio(
+                audio_path=media_path,
+                start=gap_start,
+                end=gap_end,
+            )
+
+            recovered_words = transcription_model.transcribe_gap(
+                slice_path=slice_path,
+                time_offset=max(0.0, gap_start - 0.5),
+            )
+
+        except Exception:
+
+            logger.exception(
+                "Gap re-check failed | start=%.3f | end=%.3f",
+                gap_start,
+                gap_end,
+            )
+
+            remaining_gaps.append(gap)
+            continue
+
+        finally:
+
+            if "slice_path" in locals() and os.path.exists(slice_path):
+                os.remove(slice_path)
+
+        if not recovered_words:
+
+            logger.info(
+                "Gap re-check found no speech | "
+                "start=%.3f | end=%.3f | confirmed silence",
+                gap_start,
+                gap_end,
+            )
+
+            remaining_gaps.append(gap)
+            continue
+
+        logger.warning(
+            "RECOVERED WORDS FROM PREVIOUSLY MISSED GAP | "
+            "start=%.3f | end=%.3f | recovered_words=%d",
+            gap_start,
+            gap_end,
+            len(recovered_words),
+        )
+
+        recovered_text = " ".join(
+            word["word"] for word in recovered_words
+        )
+
+        recovered_segments.append(
+            {
+                "index": -1,
+                "start": recovered_words[0]["start"],
+                "end": recovered_words[-1]["end"],
+                "text": recovered_text,
+                "words": recovered_words,
+                "recovered": True,
+            }
+        )
+
+    if recovered_segments:
+
+        segments = segments + recovered_segments
+        segments.sort(key=lambda segment: segment["start"])
+
+        for new_index, segment in enumerate(segments):
+            segment["index"] = new_index
+
+        processed_result["segments"] = segments
+
+    processed_result["silenceGaps"] = remaining_gaps
+
+    return processed_result
+
+
 async def transcribe_video(
     video_id: str,
     audio_url: str,
@@ -377,21 +507,49 @@ async def transcribe_video(
     try:
 
         # ---------------------------------------------------------
-        # DOWNLOAD AUDIO
+        # KICK OFF DEEPGRAM (VIA URL) AND LOCAL DOWNLOAD CONCURRENTLY
+        # ---------------------------------------------------------
+        #
+        # Previously we downloaded the video, extracted a WAV,
+        # then uploaded those bytes to Deepgram ourselves - a full
+        # download + re-upload round trip through our own
+        # connection. That upload step was the actual bottleneck
+        # (81s+ for a 1.7MB file is not Deepgram being slow, it's
+        # us being slow to push bytes out).
+        #
+        # Instead: send Deepgram the original audio_url directly
+        # (it fetches server-to-server, which is fast), while we
+        # separately download+extract locally in parallel purely
+        # for duration detection and gap-recovery slicing. Total
+        # time becomes max(deepgram_url_call, local_download)
+        # instead of download + upload + deepgram_processing.
         # ---------------------------------------------------------
 
         logger.info(
-            "Downloading video for audio extraction | "
+            "Starting Deepgram (URL) and local download concurrently | "
             "video_id=%s",
             video_id,
         )
 
-        media_path = await download_audio(
-            video_url=audio_url,
+        deepgram_task = asyncio.create_task(
+            transcription_model.transcribe_url(
+                audio_url=audio_url,
+            )
+        )
+
+        download_task = asyncio.create_task(
+            download_audio(
+                video_url=audio_url,
+            )
+        )
+
+        whisper_result, media_path = await asyncio.gather(
+            deepgram_task,
+            download_task,
         )
 
         logger.info(
-            "Audio ready | "
+            "Both Deepgram (URL) and local download completed | "
             "video_id=%s | path=%s | size=%d bytes",
             video_id,
             media_path,
@@ -418,19 +576,12 @@ async def transcribe_video(
         # ---------------------------------------------------------
 
         logger.info(
-            "Starting Whisper transcription | "
+            "Deepgram transcription already completed via URL call | "
             "video_id=%s",
             video_id,
         )
-
-        # Language is intentionally NOT passed.
-        # Whisper automatically detects the language.
-
-        whisper_result = transcription_model.transcribe(
-            media_path,
-        )
         logger.info(
-            "WHISPER DEBUG | duration=%s | segments=%d",
+            "DEEPGRAM RESULT DEBUG | duration=%s | segments=%d",
             whisper_result.get("duration"),
             len(whisper_result.get("segments", [])),
         )
@@ -439,7 +590,7 @@ async def transcribe_video(
             whisper_result.get("segments", [])
         ):
             logger.info(
-                "WHISPER SEGMENT | index=%d | start=%s | end=%s | text=%r | words=%d",
+                "DEEPGRAM SEGMENT | index=%d | start=%s | end=%s | text=%r | words=%d",
                 i,
                 segment.get("start"),
                 segment.get("end"),
@@ -451,7 +602,7 @@ async def transcribe_video(
             last_segment = whisper_result["segments"][-1]
 
             logger.info(
-                "WHISPER LAST SEGMENT | start=%s | end=%s | text=%r",
+                "DEEPGRAM LAST SEGMENT | start=%s | end=%s | text=%r",
                 last_segment.get("start"),
                 last_segment.get("end"),
                 last_segment.get("text"),
@@ -459,14 +610,14 @@ async def transcribe_video(
 
             if last_segment.get("words"):
                 logger.info(
-                    "WHISPER LAST WORD | %r",
+                    "DEEPGRAM LAST WORD | %r",
                     last_segment["words"][-1],
                 )
         logger.info(
-            "========== WHISPER TIMESTAMP DEBUG END =========="
+            "========== DEEPGRAM TIMESTAMP DEBUG END =========="
         )
         logger.info(
-            "Whisper transcription completed | "
+            "Deepgram transcription completed | "
             "video_id=%s | detected_language=%s | segments=%d | text=%r",
             video_id,
             whisper_result.get("language"),
@@ -489,6 +640,34 @@ async def transcribe_video(
         processed_result = await process_whisper_result(
             result=whisper_result,
             audio_duration=audio_duration,
+        )
+
+        # ---------------------------------------------------------
+        # RE-CHECK SILENCE GAPS AGAINST DEEPGRAM
+        # ---------------------------------------------------------
+        #
+        # media_path still exists at this point (it is only
+        # removed in the `finally` block below), so we can
+        # re-slice it and re-send suspect gaps to Deepgram in
+        # isolation before we save/return anything.
+        # ---------------------------------------------------------
+
+        logger.info(
+            "Re-checking silence gaps | video_id=%s | gaps=%d",
+            video_id,
+            len(processed_result.get("silenceGaps", [])),
+        )
+
+        processed_result = await recover_silence_gaps(
+            media_path=media_path,
+            processed_result=processed_result,
+        )
+
+        logger.info(
+            "Silence gap re-check completed | "
+            "video_id=%s | remaining_gaps=%d",
+            video_id,
+            len(processed_result.get("silenceGaps", [])),
         )
 
         # ---------------------------------------------------------

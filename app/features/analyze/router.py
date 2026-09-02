@@ -1,14 +1,17 @@
 import logging
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends
 
 from app.features.analyze.schema import AnalyzeRequest
 from app.features.analyze.service import analyze_transcription
+from app.auth.auth import verify_api_key
 
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(verify_api_key)],
+)
 
 
 @router.post("/analyze")

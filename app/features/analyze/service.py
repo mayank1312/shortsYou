@@ -9,6 +9,7 @@ from app.features.analyze.schema import (
     AnalyzeResponse,
     AnalyzeSegmentResult,
 )
+from app.shared.api_rotator import groq_rotator
 
 
 logger = logging.getLogger(__name__)
@@ -175,7 +176,7 @@ async def score_segment_with_llm(
     language: str,
 ) -> dict[str, Any]:
 
-    if analyze_model.groq_client is None:
+    if not groq_rotator.available:
 
         logger.warning(
             "Groq client unavailable | "
@@ -247,7 +248,7 @@ Return exactly:
 
     try:
 
-        response = analyze_model.groq_client.chat.completions.create(
+        response = groq_rotator.create_chat_completion(
             model=analyze_model.GROQ_MODEL_NAME,
             messages=[
                 {

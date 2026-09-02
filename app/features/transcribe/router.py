@@ -1,12 +1,13 @@
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.features.transcribe.schema import (
     TranscriptionRequest,
     TranscriptionResponse,
 )
 from app.features.transcribe.service import transcribe_video
+from app.auth.auth import verify_api_key
 
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="",
     tags=["Transcription"],
+    dependencies=[Depends(verify_api_key)],
 )
 
 
