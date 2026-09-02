@@ -10,12 +10,51 @@ from app.features.analyze.schema import (
     AnalyzeSegmentResult,
 )
 from app.shared.api_rotator import groq_rotator
+from app.shared.callback import send_callback
 
 
 logger = logging.getLogger(__name__)
 
 
 async def analyze_transcription(
+    request: AnalyzeRequest,
+) -> AnalyzeResponse:
+    """
+    Runs as a FastAPI background task (fired from the /analyze
+    router, which already replied {"accepted": true} before this
+    started). There is no HTTP response left to raise into, so this
+    wraps its own body in try/except and reports the outcome - success
+    or failure - via callback instead.
+    """
+
+    try:
+        return await _run_analysis(request)
+
+    except Exception as error:
+
+        logger.exception(
+            "Transcript analysis job failed | "
+            "job_id=%s | video_id=%s",
+            request.job_id,
+            request.video_id,
+        )
+
+        await send_callback(
+            callback_url=request.callbackUrl,
+            internal_key=request.internalKey,
+            payload={
+                "videoId": request.video_id,
+                "userId": request.user_id,
+                "segments": [],
+                "topicDistribution": [],
+                "error": str(error) or "analysis failed",
+            },
+        )
+
+        raise
+
+
+async def _run_analysis(
     request: AnalyzeRequest,
 ) -> AnalyzeResponse:
 
@@ -40,6 +79,18 @@ async def analyze_transcription(
             job_id=request.job_id,
             video_id=request.video_id,
             segments=[],
+        )
+
+        await send_callback(
+            callback_url=request.callbackUrl,
+            internal_key=request.internalKey,
+            payload={
+                "videoId": request.video_id,
+                "userId": request.user_id,
+                "segments": [],
+                "topicDistribution": [],
+                "error": "",
+            },
         )
 
         return empty_response
@@ -166,6 +217,36 @@ async def analyze_transcription(
         request.job_id,
         request.video_id,
         len(response.segments),
+    )
+
+    # ---------------------------------------------------------
+    # NOTIFY GO SERVER
+    # ---------------------------------------------------------
+
+    callback_segments = [
+        {
+            "index": result.index,
+            "semanticScore": result.semantic_score,
+            "noveltyScore": result.novelty_score,
+            "clarityScore": result.clarity_score,
+            "hookScore": result.hook_score,
+            "semanticLabels": result.semantic_labels,
+            "suggestedHook": result.suggested_hook,
+            "embedding": result.embedding,
+        }
+        for result in results
+    ]
+
+    await send_callback(
+        callback_url=request.callbackUrl,
+        internal_key=request.internalKey,
+        payload={
+            "videoId": request.video_id,
+            "userId": request.user_id,
+            "segments": callback_segments,
+            "topicDistribution": [],
+            "error": "",
+        },
     )
 
     return response

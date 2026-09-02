@@ -9,6 +9,7 @@ from app.features.transcribe.model import transcription_model
 from app.features.transcribe.filler_analysis import (
     analyze_transcription_for_fillers,
 )
+from app.shared.callback import send_callback
 from app.shared.downloader import download_audio, slice_audio
 
 MIN_GAP_TO_RECHECK = 3.0
@@ -767,3 +768,89 @@ async def transcribe_video(
             os.remove(
                 media_path
             )
+
+
+async def run_transcription_job(
+    job_id: str | None,
+    video_id: str,
+    user_id: str | None,
+    audio_url: str,
+    language: str | None,
+    callback_url: str | None,
+    internal_key: str | None,
+) -> None:
+    """
+    Background-task wrapper around transcribe_video() for the async
+    callback pattern. Runs the full transcription, then POSTs the
+    result (or, on failure, an error payload) to callback_url.
+
+    job_id is used only for logging here - it is NOT sent in the
+    callback body. Go correlates the callback to a video purely via
+    videoId, per the agreed contract with Abbas.
+
+    Any exception from transcribe_video() is caught here - this
+    runs detached from the original request, so there is no HTTP
+    response left to raise into. The callback POST is the only way
+    Go finds out what happened.
+    """
+
+    logger.info(
+        "Async transcription job started | "
+        "job_id=%s | video_id=%s",
+        job_id,
+        video_id,
+    )
+
+    try:
+
+        result = await transcribe_video(
+            video_id=video_id,
+            audio_url=audio_url,
+        )
+
+        payload = {
+            "videoId": video_id,
+            "userId": user_id,
+            "segments": result.get("segments", []),
+            "fillerWords": result.get("fillerWords", []),
+            "silenceGaps": result.get("silenceGaps", []),
+            "language": result.get("language") or language or "unknown",
+            "error": "",
+        }
+
+        logger.info(
+            "Async transcription job succeeded | "
+            "job_id=%s | video_id=%s | segments=%d",
+            job_id,
+            video_id,
+            len(payload["segments"]),
+        )
+
+        await send_callback(
+            callback_url=callback_url,
+            internal_key=internal_key,
+            payload=payload,
+        )
+
+    except Exception as error:
+
+        logger.exception(
+            "Async transcription job failed | "
+            "job_id=%s | video_id=%s",
+            job_id,
+            video_id,
+        )
+
+        await send_callback(
+            callback_url=callback_url,
+            internal_key=internal_key,
+            payload={
+                "videoId": video_id,
+                "userId": user_id,
+                "segments": [],
+                "fillerWords": [],
+                "silenceGaps": [],
+                "language": language or "unknown",
+                "error": str(error) or "transcription failed",
+            },
+        )

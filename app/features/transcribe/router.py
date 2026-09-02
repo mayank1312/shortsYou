@@ -1,12 +1,14 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from app.features.transcribe.schema import (
     TranscriptionRequest,
-    TranscriptionResponse,
 )
-from app.features.transcribe.service import transcribe_video
+from app.features.transcribe.service import (
+    run_transcription_job,
+    transcribe_video,
+)
 from app.auth.auth import verify_api_key
 
 
@@ -19,18 +21,54 @@ router = APIRouter(
 )
 
 
-@router.post(
-    "/transcribe",
-    response_model=TranscriptionResponse,
-)
+@router.post("/transcribe")
 async def transcribe(
     request: TranscriptionRequest,
+    background_tasks: BackgroundTasks,
 ):
     logger.info(
-        "Transcription request received | video_id=%s | audio_url=%s",
+        "Transcription request received | "
+        "job_id=%s | video_id=%s | audio_url=%s | callback=%s",
+        request.job_id,
         request.videoId,
         request.audioUrl,
+        bool(request.callbackUrl),
     )
+
+    # ---------------------------------------------------------
+    # ASYNC PATH (callbackUrl provided)
+    # ---------------------------------------------------------
+    #
+    # Respond immediately, do the work in the background, and
+    # POST the result (or an error) to callbackUrl once done.
+    # ---------------------------------------------------------
+
+    if request.callbackUrl:
+
+        background_tasks.add_task(
+            run_transcription_job,
+            request.job_id,
+            request.videoId,
+            request.userId,
+            request.audioUrl,
+            request.language,
+            request.callbackUrl,
+            request.internalKey,
+        )
+
+        return {
+            "job_id": request.job_id,
+            "accepted": True,
+        }
+
+    # ---------------------------------------------------------
+    # SYNCHRONOUS FALLBACK (no callbackUrl)
+    # ---------------------------------------------------------
+    #
+    # Kept for manual testing (Postman/curl) without needing a
+    # live callback receiver. Blocks and returns the full result
+    # directly, same as before.
+    # ---------------------------------------------------------
 
     try:
         result = await transcribe_video(
@@ -39,7 +77,8 @@ async def transcribe(
         )
 
         logger.info(
-            "Transcription request completed | video_id=%s | segments=%d | language=%s",
+            "Synchronous transcription completed | "
+            "video_id=%s | segments=%d | language=%s",
             request.videoId,
             len(result.get("segments", [])),
             result.get("language"),
@@ -49,7 +88,7 @@ async def transcribe(
 
     except Exception as error:
         logger.exception(
-            "Transcription request failed | video_id=%s",
+            "Synchronous transcription failed | video_id=%s",
             request.videoId,
         )
 

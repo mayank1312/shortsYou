@@ -31,6 +31,24 @@ class AnalyzeRequest(BaseModel):
         default_factory=list
     )
 
+    # -----------------------------------------------------------
+    # ASYNC CALLBACK FIELDS (optional)
+    # -----------------------------------------------------------
+    #
+    # /analyze always responds immediately with {"accepted": true}
+    # (it already ran as a background task before this change).
+    # These fields let that background task actually notify Go
+    # when it's done, instead of only writing to MongoDB.
+    #
+    # If callbackUrl is omitted, results are still saved to
+    # MongoDB as before, but no callback is sent - useful for
+    # manual testing without a live receiver.
+    # -----------------------------------------------------------
+
+    callbackUrl: str | None = None
+
+    internalKey: str | None = None
+
 
 class AnalyzeSegmentResult(BaseModel):
 
