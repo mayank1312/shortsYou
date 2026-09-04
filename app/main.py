@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from app.features.transcribe.router import router as transcribe_router
 from app.shared.application_logger import configure_logging
 from app.features.analyze.router import router as analyze_router
-from app.features.emotion.router import router as emotion_router
+#from app.features.emotion.router import router as emotion_router
 
 
 
@@ -36,9 +36,5 @@ app.include_router(
 )
 app.include_router(
     analyze_router,
-    prefix="/api/v1",
-)
-app.include_router(
-    emotion_router,
     prefix="/api/v1",
 )
