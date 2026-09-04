@@ -6,7 +6,8 @@ torch
 transformers
 sentence-transformers
 scikit-learn
-
+librosa
+soundfile
 groq
 httpx
 deepgram-sdk==7.7.0
