@@ -2,6 +2,7 @@ import json
 import logging
 from typing import Any
 
+from app.core.configuration import settings
 from app.features.analyze.db import analysis
 from app.features.analyze.model import analyze_model
 from app.features.analyze.schema import (
@@ -40,8 +41,8 @@ async def analyze_transcription(
         )
 
         await send_callback(
-            callback_url=request.callbackUrl,
-            internal_key=request.internalKey,
+            callback_url=settings.ANALYZE_CALLBACK_URL,
+            internal_key=settings.INTERNAL_CALLBACK_KEY,
             payload={
                 "videoId": request.video_id,
                 "userId": request.user_id,
@@ -82,8 +83,8 @@ async def _run_analysis(
         )
 
         await send_callback(
-            callback_url=request.callbackUrl,
-            internal_key=request.internalKey,
+            callback_url=settings.ANALYZE_CALLBACK_URL,
+            internal_key=settings.INTERNAL_CALLBACK_KEY,
             payload={
                 "videoId": request.video_id,
                 "userId": request.user_id,
@@ -238,8 +239,8 @@ async def _run_analysis(
     ]
 
     await send_callback(
-        callback_url=request.callbackUrl,
-        internal_key=request.internalKey,
+        callback_url=settings.ANALYZE_CALLBACK_URL,
+        internal_key=settings.INTERNAL_CALLBACK_KEY,
         payload={
             "videoId": request.video_id,
             "userId": request.user_id,

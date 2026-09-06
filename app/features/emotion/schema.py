@@ -26,21 +26,6 @@ class EmotionRequest(BaseModel):
         default_factory=list
     )
 
-    # -----------------------------------------------------------
-    # ASYNC CALLBACK FIELDS (optional)
-    # -----------------------------------------------------------
-    #
-    # Same contract as /transcribe and /analyze: if callbackUrl is
-    # provided, /emotion responds immediately with
-    # {"job_id": ..., "accepted": true} and POSTs the result (or an
-    # error) to callbackUrl once done. If omitted, results are only
-    # saved to MongoDB - useful for manual testing.
-    # -----------------------------------------------------------
-
-    callbackUrl: str | None = None
-
-    internalKey: str | None = None
-
 
 class EmotionSegmentResult(BaseModel):
 

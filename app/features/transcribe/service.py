@@ -9,6 +9,7 @@ from app.features.transcribe.model import transcription_model
 from app.features.transcribe.filler_analysis import (
     analyze_transcription_for_fillers,
 )
+from app.core.configuration import settings
 from app.shared.callback import send_callback
 from app.shared.downloader import download_audio, slice_audio
 
@@ -776,13 +777,12 @@ async def run_transcription_job(
     user_id: str | None,
     audio_url: str,
     language: str | None,
-    callback_url: str | None,
-    internal_key: str | None,
 ) -> None:
     """
     Background-task wrapper around transcribe_video() for the async
     callback pattern. Runs the full transcription, then POSTs the
-    result (or, on failure, an error payload) to callback_url.
+    result (or, on failure, an error payload) to the fixed
+    settings.TRANSCRIBE_CALLBACK_URL.
 
     job_id is used only for logging here - it is NOT sent in the
     callback body. Go correlates the callback to a video purely via
@@ -827,8 +827,8 @@ async def run_transcription_job(
         )
 
         await send_callback(
-            callback_url=callback_url,
-            internal_key=internal_key,
+            callback_url=settings.TRANSCRIBE_CALLBACK_URL,
+            internal_key=settings.INTERNAL_CALLBACK_KEY,
             payload=payload,
         )
 
@@ -842,8 +842,8 @@ async def run_transcription_job(
         )
 
         await send_callback(
-            callback_url=callback_url,
-            internal_key=internal_key,
+            callback_url=settings.TRANSCRIBE_CALLBACK_URL,
+            internal_key=settings.INTERNAL_CALLBACK_KEY,
             payload={
                 "videoId": video_id,
                 "userId": user_id,

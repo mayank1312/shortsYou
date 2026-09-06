@@ -23,6 +23,23 @@ class Settings:
 
     API_ACCESS_KEY: str = os.getenv("API_ACCESS_KEY", "")
 
+
+    INTERNAL_CALLBACK_KEY: str = os.getenv(
+        "INTERNAL_CALLBACK_KEY",
+    )
+
+    TRANSCRIBE_CALLBACK_URL: str = os.getenv(
+        "TRANSCRIBE_CALLBACK_URL",
+    )
+
+    ANALYZE_CALLBACK_URL: str = os.getenv(
+        "ANALYZE_CALLBACK_URL",
+    )
+
+    EMOTION_CALLBACK_URL: str = os.getenv(
+        "EMOTION_CALLBACK_URL",
+    )
+
     WHISPER_MODEL: str = os.getenv(
         "WHISPER_MODEL",
         "small",

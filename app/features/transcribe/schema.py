@@ -74,26 +74,7 @@ class TranscriptionRequest(BaseModel):
 
     language: str | None = None
 
-    # -----------------------------------------------------------
-    # ASYNC CALLBACK FIELDS (all optional)
-    # -----------------------------------------------------------
-    #
-    # If job_id + callbackUrl are provided, /transcribe responds
-    # immediately with {"job_id": ..., "accepted": true} and POSTs
-    # the finished result (or an error) to callbackUrl once done.
-    #
-    # If callbackUrl is omitted, /transcribe falls back to the old
-    # synchronous behavior - it blocks and returns the full
-    # TranscriptionResponse directly. This keeps manual testing
-    # (Postman, curl) working without needing a live callback
-    # receiver.
-    # -----------------------------------------------------------
-
     job_id: str | None = None
-
-    callbackUrl: str | None = None
-
-    internalKey: str | None = None
 
 
 class TranscriptionAccepted(BaseModel):

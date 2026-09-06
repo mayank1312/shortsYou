@@ -1,16 +1,16 @@
 import logging
+import os
 from typing import Any
 
 import librosa
 import numpy as np
 
+from app.core.configuration import settings
 from app.features.emotion.db import emotion
 from app.features.emotion.model import emotion_model
 from app.features.transcribe.db import transcription
 from app.shared.callback import send_callback
 from app.shared.downloader import download_audio
-
-import os
 
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 def _collect_transcript_words(
     video_id: str,
 ) -> list[dict[str, Any]]:
-   
+    
     document = transcription.get_transcription(video_id)
 
     if not document:
@@ -205,10 +205,13 @@ async def run_emotion_job(
     user_id: str | None,
     audio_url: str,
     segments: list[dict[str, Any]],
-    callback_url: str | None,
-    internal_key: str | None,
 ) -> None:
-   
+    """
+    Background-task wrapper for the async callback pattern, same
+    shape as run_transcription_job. job_id is only used for logging
+    here - Go correlates the callback to a video via videoId, not
+    job_id.
+    """
 
     logger.info(
         "Async emotion job started | job_id=%s | video_id=%s",
@@ -239,8 +242,8 @@ async def run_emotion_job(
         }
 
         await send_callback(
-            callback_url=callback_url,
-            internal_key=internal_key,
+            callback_url=settings.EMOTION_CALLBACK_URL,
+            internal_key=settings.INTERNAL_CALLBACK_KEY,
             payload=payload,
         )
 
@@ -253,8 +256,8 @@ async def run_emotion_job(
         )
 
         await send_callback(
-            callback_url=callback_url,
-            internal_key=internal_key,
+            callback_url=settings.EMOTION_CALLBACK_URL,
+            internal_key=settings.INTERNAL_CALLBACK_KEY,
             payload={
                 "videoId": video_id,
                 "userId": user_id,
