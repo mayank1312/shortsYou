@@ -44,6 +44,9 @@ class Settings:
         "WHISPER_MODEL",
         "small",
     )
+    DNA_CALLBACK_URL: str = os.getenv(
+        "DNA_CALLBACK_URL",
+    )
 
 
 settings = Settings()

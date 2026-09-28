@@ -10,7 +10,7 @@ soundfile
 groq
 httpx
 deepgram-sdk==7.7.0
-
+gensim
 python-dotenv
 pymongo
 pydantic
