@@ -15,14 +15,7 @@ class AnalyzeModel:
 
     def __init__(self) -> None:
 
-        logger.info(
-            "Loading Analyze embedding model | model=%s",
-            self.EMBEDDING_MODEL_NAME,
-        )
-
-        self.embed_model = SentenceTransformer(
-            self.EMBEDDING_MODEL_NAME
-        )
+        self._embed_model: SentenceTransformer | None = None
 
         if not groq_rotator.available:
 
@@ -30,6 +23,23 @@ class AnalyzeModel:
                 "No Groq API keys configured | "
                 "Analyze LLM scoring will be unavailable"
             )
+
+    @property
+    def embed_model(self) -> SentenceTransformer:
+
+        if self._embed_model is None:
+
+            logger.info(
+                "Loading Analyze embedding model (first use) | "
+                "model=%s",
+                self.EMBEDDING_MODEL_NAME,
+            )
+
+            self._embed_model = SentenceTransformer(
+                self.EMBEDDING_MODEL_NAME
+            )
+
+        return self._embed_model
 
 
 analyze_model = AnalyzeModel()
