@@ -22,9 +22,9 @@ from app.shared.callback import send_callback
 
 logger = logging.getLogger(__name__)
 
-TOP_WORDS_PER_TOPIC = 10
-
 LABELING_MODEL = "openai/gpt-oss-120b"
+
+TOP_WORDS_PER_TOPIC = 10
 
 MIN_COHERENCE_THRESHOLD = 0.40
 
@@ -33,6 +33,16 @@ SMALL_LIBRARY_TOPIC_COUNT = 20
 LARGE_LIBRARY_TOPIC_COUNT = 50
 
 LARGE_LIBRARY_VIDEO_THRESHOLD = 50
+
+# How much weight the EXISTING profile keeps vs the newly-computed
+# batch when syncing. A creator's DNA should be a slowly-shifting
+# fingerprint, not something that swings wildly every time a new
+# batch of videos is processed. Tune these if that assumption is
+# wrong for how this actually gets used.
+SYNC_OLD_PROFILE_WEIGHT = 0.7
+SYNC_NEW_PROFILE_WEIGHT = 0.3
+
+TOP_VOCABULARY_CAP = 20
 
 
 def _pick_topic_count(n_documents: int) -> int:
@@ -46,7 +56,8 @@ def _pick_topic_count(n_documents: int) -> int:
     # Never ask for more topics than documents - LDA becomes
     # meaningless (near one topic per document) below this point,
     # but capping avoids a hard sklearn error on tiny creator
-    # libraries.
+    # libraries. Also cap at half the document count so a small
+    # batch doesn't fragment into near-duplicate topics.
     return max(2, min(base, n_documents // 2))
 
 
@@ -166,6 +177,7 @@ def _label_topics_with_llm(
         content = response.choices[0].message.content.strip()
 
         match = re.search(r"\[.*\]", content, re.DOTALL)
+
         labels = json.loads(match.group(0)) if match else []
 
         if (
@@ -251,12 +263,131 @@ def _content_depth_score(
     return round(min(1.0, average / ceiling), 4)
 
 
+def _blend_dna_vector(
+    old_vector: list[float] | None,
+    new_vector: list[float],
+) -> list[float]:
+
+    if not old_vector or len(old_vector) != len(new_vector):
+        return new_vector
+
+    return [
+        round(
+            SYNC_OLD_PROFILE_WEIGHT * old_value
+            + SYNC_NEW_PROFILE_WEIGHT * new_value,
+            4,
+        )
+        for old_value, new_value in zip(old_vector, new_vector)
+    ]
+
+
+def _blend_topic_distribution(
+    old_topics: list[dict[str, Any]] | None,
+    new_topics: list[TopicWeight],
+) -> list[TopicWeight]:
+    """
+    Merges by normalized label text (lowercased, stripped) - LDA
+    topic indices aren't stable across separate fits, so label
+    matching is the only reasonably stable join key available.
+    Topics with genuinely new wording are treated as new topics
+    rather than merged, which is a real limitation of this
+    approach worth knowing about, not a bug.
+    """
+
+    if not old_topics:
+        return new_topics
+
+    merged: dict[str, dict[str, Any]] = {}
+
+    for old_topic in old_topics:
+
+        key = old_topic.get("label", "").strip().lower()
+
+        if not key:
+            continue
+
+        merged[key] = {
+            "topic": old_topic.get("topic", 0),
+            "label": old_topic.get("label", ""),
+            "weight": (
+                SYNC_OLD_PROFILE_WEIGHT
+                * old_topic.get("weight", 0.0)
+            ),
+        }
+
+    for new_topic in new_topics:
+
+        key = new_topic.label.strip().lower()
+
+        contribution = SYNC_NEW_PROFILE_WEIGHT * new_topic.weight
+
+        if key in merged:
+            merged[key]["weight"] += contribution
+            # Prefer the freshest label wording/index on a match.
+            merged[key]["label"] = new_topic.label
+            merged[key]["topic"] = new_topic.topic
+        else:
+            merged[key] = {
+                "topic": new_topic.topic,
+                "label": new_topic.label,
+                "weight": contribution,
+            }
+
+    total_weight = sum(
+        item["weight"] for item in merged.values()
+    )
+
+    if total_weight <= 0:
+        return new_topics
+
+    return sorted(
+        [
+            TopicWeight(
+                topic=item["topic"],
+                label=item["label"],
+                weight=round(item["weight"] / total_weight, 4),
+            )
+            for item in merged.values()
+        ],
+        key=lambda item: item.weight,
+        reverse=True,
+    )
+
+
+def _blend_top_vocabulary(
+    old_vocabulary: list[str] | None,
+    new_vocabulary: list[str],
+) -> list[str]:
+
+    combined: list[str] = []
+
+    for word in new_vocabulary + (old_vocabulary or []):
+
+        if word not in combined:
+            combined.append(word)
+
+        if len(combined) >= TOP_VOCABULARY_CAP:
+            break
+
+    return combined
+
+
 async def generate_creator_dna(
     request,
 ) -> CreatorDNAResponse:
+    """
+    The original /generate-dna path - Abbas sends the transcript
+    texts directly, no fetching, no blending with a prior profile.
+    """
 
     try:
-        return await _run_creator_dna(request)
+
+        return await _run_creator_dna(
+            job_id=request.job_id,
+            user_id=request.user_id,
+            texts=request.all_transcript_texts,
+            old_profile=None,
+        )
 
     except Exception as error:
 
@@ -279,43 +410,133 @@ async def generate_creator_dna(
         raise
 
 
-async def _run_creator_dna(
-    request,
-) -> CreatorDNAResponse:
+async def generate_creator_dna_sync(
+    user_id: str,
+) -> None:
+    """
+    The new /generate-dna/sync path. Abbas sends only userId - we:
+      1. fetch this creator's latest 5 transcripts from Abbas's own
+         database (truncated to 250 words each),
+      2. fetch whatever DNA profile already exists for this user,
+      3. run the normal LDA pipeline on the new batch,
+      4. blend the new result into the existing profile rather than
+         overwriting it outright,
+      5. save + callback.
 
-    texts = [
-        text
-        for text in request.all_transcript_texts
-        if text and text.strip()
-    ]
+    This is fired from a background task - there is no HTTP
+    response left to raise into, so every failure path here ends in
+    a callback, not an exception bubbling up silently.
+    """
 
     logger.info(
-        "Starting Creator DNA generation | job_id=%s | user_id=%s | "
-        "videos=%d",
-        request.job_id,
-        request.user_id,
-        len(texts),
+        "Starting Creator DNA sync | user_id=%s",
+        user_id,
     )
 
-    if not texts:
+    try:
 
-        logger.warning(
-            "No transcript texts received | job_id=%s | user_id=%s",
-            request.job_id,
-            request.user_id,
+        texts = creator_dna_db.get_latest_transcript_texts(
+            user_id=user_id,
         )
 
-        empty_response = CreatorDNAResponse(
-            job_id=request.job_id,
-            user_id=request.user_id,
+        if not texts:
+
+            logger.warning(
+                "No transcripts found for user_id=%s - nothing to "
+                "sync yet",
+                user_id,
+            )
+
+            await send_callback(
+                callback_url=settings.DNA_CALLBACK_URL,
+                internal_key=settings.INTERNAL_CALLBACK_KEY,
+                payload={
+                    "user_id": user_id,
+                    "topic_distribution": [],
+                    "dna_vector": [],
+                    "top_vocabulary": [],
+                    "emotional_range": {
+                        "mean": 0.0,
+                        "std": 0.0,
+                        "dominant": "unknown",
+                    },
+                    "avg_speech_rate": 0.0,
+                    "evergreens_ratio": 0.0,
+                    "error": "",
+                },
+            )
+
+            return
+
+        old_profile = creator_dna_db.get_latest_dna_profile(
+            user_id
+        )
+
+        await _run_creator_dna(
+            job_id=None,
+            user_id=user_id,
+            texts=texts,
+            old_profile=old_profile,
+        )
+
+    except Exception as error:
+
+        logger.exception(
+            "Creator DNA sync failed | user_id=%s",
+            user_id,
         )
 
         await send_callback(
             callback_url=settings.DNA_CALLBACK_URL,
             internal_key=settings.INTERNAL_CALLBACK_KEY,
             payload={
-                "job_id": request.job_id,
-                "user_id": request.user_id,
+                "user_id": user_id,
+                "error": str(error) or "creator DNA sync failed",
+            },
+        )
+
+
+async def _run_creator_dna(
+    job_id: str | None,
+    user_id: str,
+    texts: list[str],
+    old_profile: dict[str, Any] | None,
+) -> CreatorDNAResponse:
+
+    texts = [
+        text
+        for text in texts
+        if text and text.strip()
+    ]
+
+    logger.info(
+        "Running Creator DNA generation | job_id=%s | user_id=%s | "
+        "videos=%d | syncing_with_existing=%s",
+        job_id,
+        user_id,
+        len(texts),
+        bool(old_profile),
+    )
+
+    if not texts:
+
+        logger.warning(
+            "No transcript texts received | job_id=%s | user_id=%s",
+            job_id,
+            user_id,
+        )
+
+        empty_response = CreatorDNAResponse(
+            job_id=job_id,
+            user_id=user_id,
+        )
+
+        await send_callback(
+            callback_url=settings.DNA_CALLBACK_URL,
+            internal_key=settings.INTERNAL_CALLBACK_KEY,
+            payload={
+                "job_id": job_id,
+                "user_id": user_id,
                 "topic_distribution": [],
                 "dna_vector": [],
                 "top_vocabulary": [],
@@ -365,7 +586,7 @@ async def _run_creator_dna(
             "more topics | job_id=%s",
             coherence_score,
             MIN_COHERENCE_THRESHOLD,
-            request.job_id,
+            job_id,
         )
 
         n_topics = min(n_topics * 2, len(texts))
@@ -392,7 +613,7 @@ async def _run_creator_dna(
 
     topic_weights = document_topic_matrix.sum(axis=0)
 
-    topic_distribution = sorted(
+    new_topic_distribution = sorted(
         [
             TopicWeight(
                 topic=index,
@@ -418,7 +639,7 @@ async def _run_creator_dna(
 
     top_vocabulary_indices = aggregate_tfidf.argsort()[::-1][:20]
 
-    top_vocabulary = [
+    new_top_vocabulary = [
         feature_names[index]
         for index in top_vocabulary_indices
     ]
@@ -427,21 +648,17 @@ async def _run_creator_dna(
     # CROSS-REFERENCE EXISTING EMOTION/ANALYZE DATA (best effort)
     # ---------------------------------------------------------
 
-    emotion_stats = creator_dna_db.get_emotion_stats(
-        request.user_id
-    )
+    emotion_stats = creator_dna_db.get_emotion_stats(user_id)
 
-    avg_hook_score = creator_dna_db.get_avg_hook_score(
-        request.user_id
-    )
+    avg_hook_score = creator_dna_db.get_avg_hook_score(user_id)
 
     # ---------------------------------------------------------
     # 6-DIM DNA VECTOR
     # ---------------------------------------------------------
 
-    dna_vector = [
+    new_dna_vector = [
         _topic_diversity_score(
-            [item.weight for item in topic_distribution]
+            [item.weight for item in new_topic_distribution]
         ),
         round(emotion_stats["std"], 4),
         round(
@@ -453,9 +670,37 @@ async def _run_creator_dna(
         0.0,  # evergreenRatio - classifier not built yet
     ]
 
+    # ---------------------------------------------------------
+    # BLEND WITH EXISTING PROFILE (sync path only - old_profile is
+    # always None on the original /generate-dna path)
+    # ---------------------------------------------------------
+
+    if old_profile:
+
+        dna_vector = _blend_dna_vector(
+            old_profile.get("dna_vector"),
+            new_dna_vector,
+        )
+
+        topic_distribution = _blend_topic_distribution(
+            old_profile.get("topic_distribution"),
+            new_topic_distribution,
+        )
+
+        top_vocabulary = _blend_top_vocabulary(
+            old_profile.get("top_vocabulary"),
+            new_top_vocabulary,
+        )
+
+    else:
+
+        dna_vector = new_dna_vector
+        topic_distribution = new_topic_distribution
+        top_vocabulary = new_top_vocabulary
+
     response = CreatorDNAResponse(
-        job_id=request.job_id,
-        user_id=request.user_id,
+        job_id=job_id,
+        user_id=user_id,
         topic_distribution=topic_distribution,
         dna_vector=dna_vector,
         top_vocabulary=top_vocabulary,
@@ -471,16 +716,17 @@ async def _run_creator_dna(
 
     logger.info(
         "Creator DNA generation completed | job_id=%s | user_id=%s | "
-        "topics=%d | coherence=%.2f",
-        request.job_id,
-        request.user_id,
+        "topics=%d | coherence=%.2f | blended_with_existing=%s",
+        job_id,
+        user_id,
         n_topics,
         coherence_score,
+        bool(old_profile),
     )
 
     creator_dna_db.save_dna(
-        job_id=request.job_id,
-        user_id=request.user_id,
+        job_id=job_id,
+        user_id=user_id,
         profile=response.model_dump(),
     )
 
@@ -488,8 +734,8 @@ async def _run_creator_dna(
         callback_url=settings.DNA_CALLBACK_URL,
         internal_key=settings.INTERNAL_CALLBACK_KEY,
         payload={
-            "job_id": request.job_id,
-            "user_id": request.user_id,
+            "job_id": job_id,
+            "user_id": user_id,
             "topic_distribution": [
                 item.model_dump() for item in topic_distribution
             ],

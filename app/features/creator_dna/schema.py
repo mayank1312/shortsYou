@@ -14,6 +14,16 @@ class CreatorDNARequest(BaseModel):
     )
 
 
+class CreatorDNASyncRequest(BaseModel):
+    """
+    The new /generate-dna/sync contract: Abbas sends ONLY userId.
+    No job_id, no transcript texts - we fetch and truncate the
+    creator's own latest transcripts ourselves.
+    """
+
+    userId: str
+
+
 class TopicWeight(BaseModel):
 
     topic: int
@@ -34,7 +44,7 @@ class EmotionalRangeStats(BaseModel):
 
 class CreatorDNAResponse(BaseModel):
 
-    job_id: str
+    job_id: str | None = None
 
     user_id: str
 

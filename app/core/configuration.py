@@ -15,7 +15,6 @@ class Settings:
 
     MONGODB_DATABASE: str = os.getenv(
         "MONGODB_DATABASE",
-        "shorts_ml",
     )
 
     GROQ_API_KEY_1: str = os.getenv("GROQ_API_KEY_1", "")
@@ -47,6 +46,10 @@ class Settings:
     DNA_CALLBACK_URL: str = os.getenv(
         "DNA_CALLBACK_URL",
     )
+    GO_SERVER_DATABASE_NAME: str = os.getenv(
+        "GO_SERVER_DATABASE_NAME",
+    )
+
 
 
 settings = Settings()
