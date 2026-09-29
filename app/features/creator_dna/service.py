@@ -47,6 +47,9 @@ TOP_VOCABULARY_CAP = 20
 
 def _pick_topic_count(n_documents: int) -> int:
 
+    if n_documents <= 1:
+        return 1
+
     base = (
         SMALL_LIBRARY_TOPIC_COUNT
         if n_documents < LARGE_LIBRARY_VIDEO_THRESHOLD
@@ -72,7 +75,7 @@ def _fit_lda(
 ):
 
     vectorizer = TfidfVectorizer(
-        max_df=0.95,
+        max_df=1.0 if len(texts) < 2 else 0.95,
         min_df=1,
         stop_words="english",
     )
