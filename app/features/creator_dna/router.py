@@ -4,7 +4,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 
 from app.features.creator_dna.schema import (
     CreatorDNARequest,
-    CreatorDNASyncRequest,
 )
 from app.features.creator_dna.service import (
     generate_creator_dna,
@@ -28,27 +27,24 @@ async def generate_dna_endpoint(
     background_tasks: BackgroundTasks,
 ):
     logger.info(
-        "Creator DNA request received | job_id=%s | user_id=%s | "
-        "videos=%d",
-        request.job_id,
-        request.user_id,
-        len(request.all_transcript_texts),
+        "Creator DNA request received | user_id=%s",
+        request.userId,
     )
 
     background_tasks.add_task(
         generate_creator_dna,
-        request,
+        request.userId,
     )
 
     return {
-        "job_id": request.job_id,
         "accepted": True,
+        "userId": request.userId,
     }
 
 
 @router.post("/generate-dna/sync")
 async def generate_dna_sync_endpoint(
-    request: CreatorDNASyncRequest,
+    request: CreatorDNARequest,
     background_tasks: BackgroundTasks,
 ):
     """

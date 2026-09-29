@@ -372,42 +372,117 @@ def _blend_top_vocabulary(
     return combined
 
 
-async def generate_creator_dna(
-    request,
-) -> CreatorDNAResponse:
+def _merge_profiles_with_llm(
+    old_profile: dict[str, Any],
+    new_profile: CreatorDNAResponse,
+) -> CreatorDNAResponse | None:
+    """Ask Groq to reconcile the previous and newly computed DNA."""
+
+    old_payload = {
+        "user_id": old_profile.get("user_id") or old_profile.get(
+            "userId"
+        ),
+        "topic_distribution": old_profile.get(
+            "topic_distribution", []
+        ),
+        "dna_vector": old_profile.get("dna_vector", []),
+        "top_vocabulary": old_profile.get("top_vocabulary", []),
+        "emotional_range": old_profile.get(
+            "emotional_range", {}
+        ),
+        "avg_speech_rate": old_profile.get("avg_speech_rate", 0.0),
+        "evergreens_ratio": old_profile.get(
+            "evergreens_ratio", 0.0
+        ),
+        "topic_coherence_score": old_profile.get(
+            "topic_coherence_score", 0.0
+        ),
+    }
+
+    prompt = (
+        "Merge the previous creator DNA profile with the newly "
+        "computed profile. Preserve the user's identity. Return "
+        "ONLY valid JSON matching the new profile schema exactly. "
+        "The dna_vector must contain exactly 6 numbers between 0 and "
+        "1. Keep useful vocabulary and topics from both profiles, "
+        "and favor the new profile when the values conflict.\n\n"
+        f"PREVIOUS PROFILE:\n{json.dumps(old_payload)}\n\n"
+        f"NEW PROFILE:\n{json.dumps(new_profile.model_dump())}"
+    )
+
+    try:
+
+        response = groq_rotator.create_chat_completion(
+            model=LABELING_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        content = response.choices[0].message.content.strip()
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+
+        if not match:
+            return None
+
+        merged = CreatorDNAResponse.model_validate(
+            json.loads(match.group(0))
+        )
+
+        if (
+            merged.user_id != new_profile.user_id
+            or len(merged.dna_vector) != 6
+            or any(value < 0 or value > 1 for value in merged.dna_vector)
+        ):
+            logger.warning(
+                "Groq DNA merge returned an invalid profile - "
+                "using deterministic blend"
+            )
+            return None
+
+        return merged.model_copy(update={"job_id": None})
+
+    except Exception:
+
+        logger.exception(
+            "Groq DNA merge failed - using deterministic blend"
+        )
+
+        return None
+
+
+async def generate_creator_dna(user_id: str) -> None:
     """
-    The original /generate-dna path - Abbas sends the transcript
-    texts directly, no fetching, no blending with a prior profile.
+    Generate a fresh DNA profile from the creator's latest transcripts.
+    Transcripts are always fetched from the Go server database.
     """
 
     try:
 
-        return await _run_creator_dna(
-            job_id=request.job_id,
-            user_id=request.user_id,
-            texts=request.all_transcript_texts,
+        texts = creator_dna_db.get_latest_transcript_texts(
+            user_id=user_id,
+        )
+
+        await _run_creator_dna(
+            job_id=None,
+            user_id=user_id,
+            texts=texts,
             old_profile=None,
         )
 
     except Exception as error:
 
         logger.exception(
-            "Creator DNA job failed | job_id=%s | user_id=%s",
-            request.job_id,
-            request.user_id,
+            "Creator DNA generation failed | user_id=%s",
+            user_id,
         )
 
         await send_callback(
             callback_url=settings.DNA_CALLBACK_URL,
             internal_key=settings.INTERNAL_CALLBACK_KEY,
             payload={
-                "job_id": request.job_id,
-                "user_id": request.user_id,
+                "user_id": user_id,
                 "error": str(error) or "creator DNA generation failed",
             },
         )
-
-        raise
 
 
 async def generate_creator_dna_sync(
@@ -675,35 +750,12 @@ async def _run_creator_dna(
     # always None on the original /generate-dna path)
     # ---------------------------------------------------------
 
-    if old_profile:
-
-        dna_vector = _blend_dna_vector(
-            old_profile.get("dna_vector"),
-            new_dna_vector,
-        )
-
-        topic_distribution = _blend_topic_distribution(
-            old_profile.get("topic_distribution"),
-            new_topic_distribution,
-        )
-
-        top_vocabulary = _blend_top_vocabulary(
-            old_profile.get("top_vocabulary"),
-            new_top_vocabulary,
-        )
-
-    else:
-
-        dna_vector = new_dna_vector
-        topic_distribution = new_topic_distribution
-        top_vocabulary = new_top_vocabulary
-
-    response = CreatorDNAResponse(
+    new_response = CreatorDNAResponse(
         job_id=job_id,
         user_id=user_id,
-        topic_distribution=topic_distribution,
-        dna_vector=dna_vector,
-        top_vocabulary=top_vocabulary,
+        topic_distribution=new_topic_distribution,
+        dna_vector=new_dna_vector,
+        top_vocabulary=new_top_vocabulary,
         emotional_range=EmotionalRangeStats(
             mean=emotion_stats["mean"],
             std=emotion_stats["std"],
@@ -713,6 +765,34 @@ async def _run_creator_dna(
         evergreens_ratio=0.0,
         topic_coherence_score=coherence_score,
     )
+
+    response = new_response
+
+    if old_profile:
+
+        response = _merge_profiles_with_llm(
+            old_profile,
+            new_response,
+        ) or CreatorDNAResponse(
+            job_id=job_id,
+            user_id=user_id,
+            topic_distribution=_blend_topic_distribution(
+                old_profile.get("topic_distribution"),
+                new_topic_distribution,
+            ),
+            dna_vector=_blend_dna_vector(
+                old_profile.get("dna_vector"),
+                new_dna_vector,
+            ),
+            top_vocabulary=_blend_top_vocabulary(
+                old_profile.get("top_vocabulary"),
+                new_top_vocabulary,
+            ),
+            emotional_range=new_response.emotional_range,
+            avg_speech_rate=new_response.avg_speech_rate,
+            evergreens_ratio=new_response.evergreens_ratio,
+            topic_coherence_score=new_response.topic_coherence_score,
+        )
 
     logger.info(
         "Creator DNA generation completed | job_id=%s | user_id=%s | "
@@ -728,6 +808,9 @@ async def _run_creator_dna(
         job_id=job_id,
         user_id=user_id,
         profile=response.model_dump(),
+        existing_profile_id=(
+            old_profile.get("_id") if old_profile else None
+        ),
     )
 
     await send_callback(
@@ -737,10 +820,11 @@ async def _run_creator_dna(
             "job_id": job_id,
             "user_id": user_id,
             "topic_distribution": [
-                item.model_dump() for item in topic_distribution
+                item.model_dump()
+                for item in response.topic_distribution
             ],
-            "dna_vector": dna_vector,
-            "top_vocabulary": top_vocabulary,
+            "dna_vector": response.dna_vector,
+            "top_vocabulary": response.top_vocabulary,
             "emotional_range": response.emotional_range.model_dump(),
             "avg_speech_rate": response.avg_speech_rate,
             "evergreens_ratio": response.evergreens_ratio,

@@ -5,22 +5,6 @@ from pydantic import BaseModel, Field
 
 class CreatorDNARequest(BaseModel):
 
-    job_id: str
-
-    user_id: str
-
-    all_transcript_texts: List[str] = Field(
-        default_factory=list
-    )
-
-
-class CreatorDNASyncRequest(BaseModel):
-    """
-    The new /generate-dna/sync contract: Abbas sends ONLY userId.
-    No job_id, no transcript texts - we fetch and truncate the
-    creator's own latest transcripts ourselves.
-    """
-
     userId: str
 
 

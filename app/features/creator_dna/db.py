@@ -151,6 +151,7 @@ class CreatorDNA:
         job_id: str | None,
         user_id: str,
         profile: dict[str, Any],
+        existing_profile_id: Any | None = None,
     ) -> str:
 
         document = {
@@ -159,6 +160,15 @@ class CreatorDNA:
             **profile,
             "createdAt": datetime.now(timezone.utc),
         }
+
+        if existing_profile_id is not None:
+
+            self.collection.update_one(
+                {"_id": existing_profile_id},
+                {"$set": document},
+            )
+
+            return str(existing_profile_id)
 
         result = self.collection.insert_one(document)
 
