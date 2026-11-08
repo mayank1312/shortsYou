@@ -50,6 +50,4 @@ class Settings:
         "GO_SERVER_DATABASE_NAME",
     )
 
-
-
 settings = Settings()

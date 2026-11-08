@@ -7,6 +7,7 @@ from app.shared.application_logger import configure_logging
 from app.features.analyze.router import router as analyze_router
 #from app.features.emotion.router import router as emotion_router
 from app.features.creator_dna.router import router as creator_dna_router
+from app.features.train_cpep.router import router as train_cpep_router
 
 
 
@@ -43,3 +44,4 @@ app.include_router(
     creator_dna_router,
     prefix="/api/v1",
 )
+app.include_router(train_cpep_router, prefix="/api/v1")
