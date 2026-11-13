@@ -8,6 +8,7 @@ from app.features.analyze.router import router as analyze_router
 #from app.features.emotion.router import router as emotion_router
 from app.features.creator_dna.router import router as creator_dna_router
 from app.features.train_cpep.router import router as train_cpep_router
+from app.features.trend_forecast.router import router as trend_forecast_router
 
 
 
@@ -45,3 +46,4 @@ app.include_router(
     prefix="/api/v1",
 )
 app.include_router(train_cpep_router, prefix="/api/v1")
+app.include_router(trend_forecast_router, prefix="/api/v1")

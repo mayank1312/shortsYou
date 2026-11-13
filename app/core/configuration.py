@@ -50,4 +50,11 @@ class Settings:
         "GO_SERVER_DATABASE_NAME",
     )
 
+    # Trend forecast: plain Groq model + Tavily for live web results.
+    TREND_MODEL: str = os.getenv(
+        "TREND_MODEL",
+        "openai/gpt-oss-120b",
+    )
+    TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+
 settings = Settings()
